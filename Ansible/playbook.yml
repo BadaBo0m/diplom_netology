@@ -1,0 +1,337 @@
+---
+- name: WEB and ELK
+  hosts: webservers,elastic-hosts,kibana-hosts
+  become: true
+  tasks:
+    - name: Add source repository into sources list
+      ansible.builtin.apt_repository:
+        repo: "deb [trusted=yes] https://mirror.yandex.ru/mirrors/elastic/8/ stable main"
+        state: present
+- name: Update
+  hosts: all
+  become: true
+  tasks:
+    - name: Run the equivalent of "apt-get update" as a separate step
+      ansible.builtin.apt:
+        update_cache: true
+- name: WEB servers
+  hosts: webservers
+  become: true
+  tasks:
+    - name: Install a list of packages
+      ansible.builtin.apt:
+        pkg:
+        - nginx
+        - filebeat
+
+- name: Prometheus Installing
+  hosts: prometheus-hosts
+  become: true
+  tasks:
+    - name: Create User Prometheus
+      user:
+        name: prometheus
+        create_home: no
+        shell: /bin/false
+    - name: Create Directories For Prometheus
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: prometheus
+        group: prometheus
+      loop:
+        - '/tmp/prometheus'
+        - '/etc/prometheus'
+        - '/var/lib/prometheus'
+    - name: Download And Unzipped Prometheus
+      unarchive:
+        src: https://github.com/prometheus/prometheus/releases/download/v2.28.1/prometheus-2.28.1.linux-amd64.tar.gz
+        dest: /tmp/prometheus
+        creates: /tmp/prometheus/prometheus-2.28.1.linux-amd64
+        remote_src: yes
+    - name: Copy Bin Files From Unzipped to Prometheus
+      copy: 
+        src: /tmp/prometheus/prometheus-2.28.1.linux-amd64/{{ item }}
+        dest: /usr/local/bin/
+        remote_src: yes
+        mode: preserve
+        owner: prometheus
+        group: prometheus
+      loop: [ 'prometheus', 'promtool' ]
+    - name: Copy Conf Files From Unzipped to Prometheus
+      copy: 
+        src: /tmp/prometheus/prometheus-2.28.1.linux-amd64/{{ item }}
+        dest: /etc/prometheus/
+        remote_src: yes
+        mode: preserve
+        owner: prometheus
+        group: prometheus
+      loop: [ 'console_libraries', 'consoles', 'prometheus.yml' ]
+    - name: Create File for Prometheus Systemd
+      template:
+        src: config/prometheus.service
+        dest: /etc/systemd/system/
+
+    #- name: copy install script prometheus
+    #  template:
+     #   src: install_prometheus.sh.j2
+      #  dest: install_prometheus.sh
+    #- name: run install script prometheus
+    #  command: bash ./install_prometheus.sh
+    - name: config prometheus
+      template:
+        src: config/prometheus/prometheus.j2
+        dest: /etc/prometheus/prometheus.yml
+    - name: Systemctl Prometheus Start
+      systemd:
+        name: prometheus
+        state: started
+        enabled: yes
+    #- name: create service prometheus
+     # template:
+     #   src: config/prometheus.service.j2
+     #   dest: /etc/systemd/system/prometheus.service
+    #- name: Start service prometheus
+     # ansible.builtin.service:
+    #    name: prometheus.service
+     #   state: restarted
+- name: Install Node-exporter
+  hosts: node-exporter-hosts
+  become: true
+  tasks:
+    - name: Create User Prometheus
+      user:
+        name: prometheus
+        create_home: no
+        shell: /bin/false
+    - name: Create Directories For Node-exporter
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: prometheus
+        group: prometheus
+      loop:
+        - '/tmp/node-exporter'
+        - '/etc/prometheus/node-exporter'
+    - name: Download And Unzipped Node-exporter
+      unarchive:
+        src: https://github.com/prometheus/node_exporter/releases/download/v1.0.0/node_exporter-1.0.0.linux-amd64.tar.gz
+        dest: /tmp/node-exporter
+        creates: /tmp/node-exporter/node_exporter-1.0.0.linux-amd64
+        remote_src: yes
+    - name: Copy Conf Files From Unzipped to Node-exporter
+      copy: 
+        src: /tmp/node-exporter/node_exporter-1.0.0.linux-amd64/{{ item }}
+        dest: /etc/prometheus/node-exporter
+        remote_src: yes
+        mode: preserve
+        owner: prometheus
+        group: prometheus
+      loop: [ 'node_exporter', 'NOTICE', 'LICENSE' ]
+    - name: Create File for Node-exporter Systemd
+      template:
+        src: config/node-exporter.service
+        dest: /etc/systemd/system/
+    - name: Systemctl Node-exporter Start
+      systemd:
+        name: node-exporter
+        state: started
+        enabled: yes
+
+    #- name: copy install script node-exporter
+      #template:
+       # src: install_node-exporter.sh.j2
+       # dest: install_node-exporter.sh
+    #- name: run install script node-exporter
+   #   command: bash ./install_node-exporter.sh
+   # - name: create service node-exporter
+    #  template:
+    #    src: config/node-exporter.service.j2
+     #   dest: /etc/systemd/system/node-exporter.service
+    #- name: Enable service node-exporter
+    #  ansible.builtin.service:
+     #   name: node-exporter.service
+     #   enabled: true
+     #   state: restarted
+- name: WEB install Nginx Log Exporter
+  hosts: webservers
+  become: true
+  tasks:
+    - name: Install Nginx Log Exporter
+      ansible.builtin.apt:
+        deb: https://github.com/martin-helmich/prometheus-nginxlog-exporter/releases/download/v1.9.2/prometheus-nginxlog-exporter_1.9.2_linux_amd64.deb
+        state: present
+    - name: Edit service prometheus-nginxlog-exporter
+      template:
+        src: config/prometheus-nginxlog-exporter.hcl.j2
+        dest: /etc/prometheus-nginxlog-exporter.hcl
+    - name: chmod nginx access log to 755
+      file:
+        path: /var/log/nginx/access.log
+        mode: 0755
+    - name: chmod nginx error log to 755./
+      file:
+        path: /var/log/nginx/error.log
+        mode: 0755
+    - name: Start service Nginx Log Exporter
+      ansible.builtin.service:
+        name: prometheus-nginxlog-exporter.service
+        state: restarted
+
+- name: Grafana installing
+  hosts: grafana-hosts
+  become: true
+  tasks:
+    - name: Install Grafana
+      ansible.builtin.apt:
+        deb: https://dl.grafana.com/oss/release/grafana_7.0.3_amd64.deb
+        state: present
+    - name: Enable service Grafana
+      ansible.builtin.service:
+        name: grafana-server
+        enabled: true
+        state: started
+    - name: Check if Grafana is accessible
+      uri:
+        url: 'http://localhost:3000'
+        return_content: yes
+        validate_certs: no
+        status_code:
+          - 200
+      until: uri_output.status == 200
+      retries: 24 # Retries for 24 * 5 seconds = 120 seconds = 2 minutes
+      delay: 5 # Every 5 seconds
+      register: uri_output
+    - name: drop prometheus datasource
+      community.grafana.grafana_datasource:
+        name: prometheus
+        state: absent
+        url: http://localhost:3000
+        url_username: "admin"
+        url_password: "admin"
+        ds_type: prometheus
+        ds_url: http://prom.test.netology:9090
+        access: proxy
+    - name: create prometheus datasource
+      community.grafana.grafana_datasource:
+        name: prometheus
+        state: present
+        url: http://localhost:3000
+        url_username: "admin"
+        url_password: "admin"
+        ds_type: prometheus
+        ds_url: http://prom.test.netology:9090
+        access: proxy
+    - name: Import Grafana dashboard
+      community.grafana.grafana_dashboard:
+        url: http://localhost:3000
+        url_username: "admin"
+        url_password: "admin"
+        folder: General
+        dashboard_id: 11074
+
+- name: ElasticSearch installing
+  hosts: elastic-hosts
+  become: true
+  tasks:
+    - name: RAM settings
+      command: sysctl -w vm.max_map_count=262144
+    - name: ElasticSearch Install a list of packages
+      ansible.builtin.apt:
+        pkg:
+        - elasticsearch
+    - name: check if my user exists
+      shell: /usr/share/elasticsearch/bin/elasticsearch-users list | grep -c userl
+      register: has_user
+      failed_when: has_user.rc not in [ 0, 1, 2, 3 ]
+    - name: create user
+      shell: /usr/share/elasticsearch/bin/elasticsearch-users useradd userl -p 123456789 -r superuser
+      when: has_user.stdout == "0"
+    - name: just change password
+      shell: /usr/share/elasticsearch/bin/elasticsearch-users passwd userl -p 123456789
+      when: has_user.stdout != "0"
+    - name: add kibana_system role to user
+      shell: /usr/share/elasticsearch/bin/elasticsearch-users roles userl -a kibana_system
+    - name: create service elasticsearch
+      template:
+        src: config/elasticsearch/elasticsearch.yml.j2
+        dest: /etc/elasticsearch/elasticsearch.yml
+        owner: elasticsearch
+    - name: Customising Elascticsearch Startup time from 75 to 210 sec - create directory form CustomConf
+      file:
+        path: /usr/lib/systemd/system/elasticsearch.service.d
+        state: directory
+    - name: Customising Elascticsearch Startup time from 75 to 210 sec - creating file
+      template:
+        src: config/elasticsearch.service.d/startup-timeout.conf.j2
+        dest: /usr/lib/systemd/system/elasticsearch.service.d/startup-timeout.conf
+    - name: Enable and Start ElasticSearch
+      ansible.builtin.service:
+        name: elasticsearch
+        enabled: true
+        state: started
+      register: result
+      ignore_errors: true
+    - name: Show result of task
+      debug:
+        var: result
+
+- name: KIBANA
+  hosts: kibana-hosts
+  become: true
+  tasks:
+    - name: KIBANA install
+      ansible.builtin.apt:
+        pkg:
+        - kibana
+    - name: config service elasticsearch
+      template:
+        src: config/kibana/kibana.yml.j2
+        dest: /etc/kibana/kibana.yml
+        owner: kibana
+    - name: Enable and Start Kibana
+      ansible.builtin.service:
+        name: kibana
+        enabled: true
+        state: started
+
+- name: WEB run filebeat
+  hosts: webservers
+  become: true
+  tasks:
+    - name: cmd for activate filebeat-nginx
+      command: filebeat modules enable system nginx
+    - name: Edit service filebeat
+      template:
+        src: config/filebeat/filebeat.yml.j2
+        dest: /etc/filebeat/filebeat.yml
+    - name: Edit service filebeat/nginx
+      template:
+        src: config/filebeat/modules.d/nginx.yml.j2
+        dest: /etc/filebeat/modules.d/nginx.yml
+    - name: Edit service filebeat/nginx
+      template:
+        src: config/filebeat/modules.d/system.yml.j2
+        dest: /etc/filebeat/modules.d/system.yml
+    - name: Start service filebeat
+      ansible.builtin.service:
+        name: filebeat.service
+        state: restarted
+    - name: Check if Kibana is accessible
+      uri:
+        url: 'http://kib.test.netology:5601/api/status'
+        return_content: no
+        validate_certs: no
+        user: "userl"
+        password: "123456789"
+        method: GET
+        force_basic_auth: true
+        status_code:
+          - 200
+      until: uri_kibana_output.status == 200
+      retries: 48 # Retries for 24 * 5 seconds = 240 seconds = 4 minutes
+      delay: 5 # Every 5 seconds
+      register: uri_kibana_output
+    - name: Enabling filebeat for kibana (with ignore_errors, it's too long process)
+      command: filebeat setup
+      ignore_errors: true
